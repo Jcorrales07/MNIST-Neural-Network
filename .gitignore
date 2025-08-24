@@ -188,6 +188,7 @@ psd
 thumb
 sketch
 
-data/mnist/mnist.csv
+digit-recognizer/
+mnist/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,react
