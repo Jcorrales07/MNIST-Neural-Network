@@ -1,5 +1,3 @@
-
-
 import pandas as pd
 import numpy as np
 import random
@@ -117,13 +115,112 @@ class DataLoader:
             "num_classes": self.num_classes,
         }
         
-    def load(self):
-        df = pd.read_csv(self.dataset_path) 
-        self.dataset = np.array(df)
-        np.random.shuffle(self.dataset)
+    def load(self):        
+        if not os.path.exists(self.dataset_path):
+            raise FileNotFoundError(f"File: {self.dataset_path} doesn't exist. Check your path")
         
-        self.rows = self.dataset.shape[0]
-        self.columns = self.dataset.shape[1]  
+        df = pd.read_csv(
+                self.dataset_path, 
+                header = 0 if self.has_header else None, 
+                dtype = self.dtype_raw
+            )
+        
+        self.df_lenrows = len(df)
+    
+        if not self.expect_cols == df.shape[1]:
+            raise ValueError(f"Expected columns: {self.expect_cols}, got: {df.shape[1]}")
+        
+        if not len(df) > 0:
+            raise ValueError(f"Your dataset is empty, rows count: {len(df)}")
+        
+        self._labels_raw = df.iloc[:, 0].to_numpy(copy=False)
+        self._pixels_raw = df.iloc[0:, 1:].to_numpy(copy=False) 
+        
+        print(self._labels_raw.dtype)
+        
+        labels = self._labels_raw.shape
+        pixels = self._pixels_raw.shape
+        
+        
+        
+        if not np.isfinite(self._labels_raw).all():
+            raise ValueError("Labels contain NaN/Inf")
+        
+        if not np.isfinite(self._pixels_raw).all():
+            raise ValueError("Pixels contain NaN/Inf")
+        
+        if not np.issubdtype(self._labels_raw.dtype, np.integer):
+            raise ValueError(f"Labels must have integer dtype, got: {self._labels_raw.dtype}")
+        
+        if not ((self._labels_raw >= 0) & (self._labels_raw < self.num_classes)).all():
+            raise ValueError(f"All labels must be in range [0, {self.num_classes-1}]")
+        
+        if not (labels == (len(df), ) and pixels == (len(df), self.num_features)):
+            raise ValueError(f"Please check your data shapes: labels shape: {labels} pixels: {pixels}")
+    
+    def parse_and_shape(self, orientation='cols'):
+        
+        if self._pixels_raw is None or self._labels_raw is None:
+            raise RuntimeError("Function parse_and_shape requieres load_csv() first")
+        
+        if not isinstance(self._pixels_raw, np.ndarray):
+            raise ValueError(f"The pixels_raw array is not a Numpy array, please check it")
+        elif self._pixels_raw.shape != (self.df_lenrows, self.num_features):
+            raise ValueError(f"The pixels_raw array shape has to be: {(self.df_lenrows, self.num_features)}, got: {self._pixels_raw.shape}")
+        elif self._pixels_raw.dtype != np.uint8:
+            raise ValueError(f"The content in pixels_raw array must be uint8, got {self._pixels_raw.dtype}")
+        
+        if not isinstance(self._labels_raw, np.ndarray):
+            raise ValueError(f"The labels_raw array is not a Numpy array, please check it")
+        elif self._labels_raw.shape != (self.num_classes, ):
+            raise ValueError(f"The labels_raw array shape has to be: {(self.num_classes, )}, got: {self._labels_raw.shape}")
+        elif self._labels_raw.dtype != np.uint8:
+            raise ValueError(f"The content in labels_raw array must be uint8, got {self._labels_raw.dtype}")
+        
+        if not self.num_classes == 10:
+            raise ValueError(f"num_classes for MNIST has to be 0-9, got: {self.num_classes}")
+        
+        if not self.num_features == 784:
+            raise ValueError(f"num_features for MNIST has to be 28x28 = 784, got: {self.num_features}")
+          
+        if orientation != 'cols' or self.orientation != orientation:
+            raise ValueError(f"The only orientation supported is 'cols', got: {orientation}") 
+        
+        if orientation == 'cols':
+            # me falta probar este codigo y validarlo si esta bien hecho con chatgpt
+            def to_one_hot(y_raw: np.ndarray, num_classes=10, orientation="cols"):
+                if not y_raw.shape == (self.df_lenrows,):
+                    raise ValueError(f"y_raw should be an array of shape (N, ), got: {y_raw.shape}")
+                
+                if not y_raw.dtype == np.uint8:
+                    raise ValueError("Error")
+                
+                if not num_classes >= 2:
+                    raise ValueError("error")
+                
+                if orientation == 'cols':
+                    Y = np.zeros((self.num_classes, self.df_lenrows))
+                    Y[np.arange(y_raw.size), y_raw] = 1.0
+                    # falta el verify
+                    
+                    return Y
+            
+            X = self._pixels_raw.T
+            y_raw = self._labels_raw
+            
+            Y = np.array([[0,0,0,0]])
+            Y = to_one_hot(y_raw, num_classes=self.num_classes, orientation='cols')
+            
+            if Y.shape == (self.num_classes, self.df_lenrows) and Y.dtype == np.float32:
+                self.X = X
+                self.y_raw = y_raw
+                self.Y = Y
+                
+            if self.X.shape == (self.num_classes, self.df_lenrows) and self.y_raw.shape == (self.df_lenrows, ) and self.Y.shape == (self.num_classes, self.df_lenrows) and np.allclose(self.Y.sum(axis=0), 1.0):
+                print('Todo bien, no se que poner aca')
+                
+            
+            
         
     def get_split(self, type):
         if type == 'dev':
@@ -143,9 +240,7 @@ class DataLoader:
             
             X_train = X_train / 255
             
-            return X_train, Y_train
-            
-        
+            return X_train, Y_train      
        
 """
 Split policy
@@ -161,17 +256,13 @@ If `stratify` is True, class proportions are preserved per split. The splitting
 (and later batch shuffles) are deterministic given `seed`.
 
 """
-        
-                   
-                    
-        
-        
-data = DataLoader('./data/digit-recognizer/train.csv', split={"train": 1.1, "val": -0.1, "test": 0.0})
+       
+data = DataLoader('./data/digit-recognizer/train.csv')
 data.load()
-X_train, Y_train = data.get_split('train')
+# X_train, Y_train = data.get_split('train')
 
-print(data.split)
-print(X_train.shape, Y_train.shape)
+# print(data.split)
+# print(X_train.shape, Y_train.shape)
 
 # Tengo que conocer como se mira el X/Y_train y X/Y_dev 
 # Cuales son las funciones minimas para el data loader?
@@ -187,7 +278,7 @@ Lo que tengo que hacer para esta clase es:
 
 0. __init__ LISTO
 
-1. load_csv
+1. load_csv LISTO
 
 2. parse_and_shape
     2.1 to_one_hot
@@ -209,5 +300,338 @@ Lo que tengo que hacer para esta clase es:
 
 Basicamente lo que estuve hablando con el chat: https://chatgpt.com/g/g-p-68a624f6af808191b42299d9be37a81f-mnist-nn/c/68a62778-122c-8328-8db0-18f3e49ea414
 
+
+Love this mindset—if you understand the “why,” the “how” becomes obvious. Here’s what each piece of a solid `DataLoader` is doing, why it matters for your MNIST project, and what “done” looks like.
+
+---
+
+## 1) Load the data
+
+**What:** Read the MNIST CSV into memory. In most CSV versions, each row is one image; the first column is the label (0–9) and the remaining 784 columns are pixel values.
+
+**Why:** Everything else builds on this—no clean load, no clean training.
+
+**Done looks like:** you can access:
+
+* `pixels_raw` with shape `(N, 784)` (or transposed if you choose the “samples as columns” convention).
+* `labels_raw` with shape `(N,)` and integer classes `0..9`.
+
+---
+
+## 2) Parse & shape
+
+**What:** Decide and enforce array shapes and orientation throughout the project.
+
+* You already chose **“samples as columns.”** That means use:
+
+  * `X`: `(features, N)` → `(784, N)`
+  * `y_raw`: `(N,)`
+  * `Y` (one-hot): `(classes, N)` → `(10, N)`
+
+**Why:** Consistency keeps your math and backprop simple. Dense layers expect vectors; MNIST images must be **flattened** (28×28 → 784) for a fully connected net. (Conv nets can keep H×W, but you’re doing FC now.)&#x20;
+
+**Done looks like:** one place (your loader) guarantees these shapes; the rest of the code can assume them.
+
+---
+
+## 3) Preprocess
+
+**What:** Scale pixel values to a small, consistent range (e.g., 0–1 or −1–1); optionally center around 0.
+
+**Why:** Neural nets train better when inputs are in similar, modest ranges. Scaling avoids instabilities and works harmoniously with common activations (ReLU, sigmoid, softmax). For images, dividing by 255 (0–1) or shifting to −1–1 are both common.  &#x20;
+
+**Important rule:** Fit your scaling **using training data** and apply the *same* scaler to validation/test and to future inference inputs. Don’t let test data influence preprocessing choices (no leakage). &#x20;
+
+**Done looks like:** you store the scaling recipe (e.g., “divide by 255” or min/max/mean), and `X` is scaled accordingly.
+
+---
+
+## 4) Splitting & reproducibility
+
+**What:** Split into train/validation(/test) and make the split repeatable (set a random seed).
+
+**Why:** You need **out-of-sample** data to detect overfitting and measure generalization. A repeatable split helps debugging and comparisons.&#x20;
+
+**Done looks like:** deterministic masks/indices for `train`, `val`, (`test`), with a saved `random_state` so you can recreate the split later.
+
+---
+
+## 5) Batching
+
+**What:** Serve data in mini-batches (e.g., 64 or 128 samples at a time) and shuffle the order each **epoch**.
+
+**Why:** Batches make training efficient and stable; shuffling prevents the model from seeing long runs of a single class and becoming biased. When shuffling, keep samples and labels aligned. &#x20;
+
+**Epochs?** One **epoch** = the model has seen every training sample once (usually via many batches). You’ll see loss/accuracy reported per step and per epoch.&#x20;
+
+**Done looks like:** an iterator that, per epoch, shuffles consistently, yields `(X_batch, Y_batch)` (and `y_raw_batch` if you want), and handles the final “short” batch gracefully.
+
+---
+
+## 6) Caching
+
+**What:** Save expensive-to-recompute artifacts (e.g., scaled `X`, one-hot `Y`, split indices) to disk, typically in a fast NumPy format.
+
+**Why:** Faster dev loop. You avoid re-parsing CSV and re-doing preprocessing every run. It also reduces the chance of accidental drift in preprocessing across runs.
+
+**Done looks like:** a small `.npz` that stores `{X, y_raw, Y, split_indices, scaler_metadata, version/tag}` and a simple “is cache valid?” check (same CSV file, same preprocessing settings).
+
+---
+
+## 7) Sanity checks & diagnostics
+
+**What:** Quick validations that catch subtle data bugs *before* training:
+
+* **Shapes/orientation:** `X.shape == (784, N)`, `Y.shape == (10, N)`, `y_raw.shape == (N,)`.
+* **Ranges:** min/max of `X` match your scaling (e.g., 0–1 or −1–1).&#x20;
+* **Label alignment after shuffle:** randomly inspect a few images and confirm the label matches. (Shuffling samples and labels independently is a classic pitfall.) &#x20;
+* **Class balance:** histogram of labels—MNIST is roughly balanced; if yours isn’t, you’ll want to know.
+* **No NaNs/Infs:** check for invalid numbers.
+* **Tiny overfit test:** train on a very small subset and confirm the model can drive loss near zero—if it can’t, your pipeline might be broken.
+
+**Why:** These catch the mistakes that silently ruin training.
+
+**Done looks like:** a `DataLoader.validate()` step that prints a short report (shapes, ranges, class counts) and maybe shows a few sample images/labels.
+
+---
+
+## 8) Metadata for inference
+
+**What:** Save everything you’ll need to reproduce preprocessing and interpret predictions later:
+
+* Input spec: “expects `(784,)` vector scaled by **\\[your rule]**; orientation = samples-as-columns.”
+* Label mapping `0..9` → class names (if you’re using names).
+* One-hot vs sparse choice (your training used one-hot targets—store that).
+* The scaler parameters or the exact rule (e.g., “divide by 255” or “subtract 127.5 then divide 127.5”). You *must* apply the same to user-drawn digits in your React app.&#x20;
+
+**Why:** The model is only as good as the data you feed it—at inference time you must **mirror** training-time preprocessing or predictions will degrade.&#x20;
+
+**Done looks like:** alongside saved weights, you persist a small JSON (or similar) with the above fields and the random seed used for splits/shuffles.
+
+---
+
+### TL;DR — what your `DataLoader` should *return/expose*
+
+* **Tensors/arrays:** `X_train, Y_train, y_train_raw`, `X_val, Y_val, y_val_raw`, (`X_test, ...`).
+* **Iterators:** a batched, shuffling iterator over the train split (and non-shuffling for val/test).
+* **Metadata:** scaler rule/params, label mapping, input shape/orientation, random seed, and any cache/version info.
+* **Diagnostics:** quick stats (shapes, ranges, class counts) and a simple `validate()` method.
+
+If you’d like, we can turn this into a short acceptance checklist you can keep next to `data_loader.py` so you can tick each item off as you implement it.
+
+
+
 """    
+   
+# DESCRIPCIONES DE FUNCIONES     
         
+"""
+Awesome—let’s turn your list into a **crisp, code-ready API blueprint**. No code here, just exact function contracts so you can implement confidently.
+
+---
+
+# 1) Load the data
+
+### `load_csv(path, *, expect_cols=785, has_header=True, dtype="uint8") -> None`
+
+* **Purpose:** Read raw CSV bytes into memory safely.
+* **Needs to work:** a file path; optional header flag; expected column count (1 label + 784 pixels).
+* **Params:**
+
+  * `path`: string to `mnist.csv`
+  * `expect_cols`: sanity guard (should be 785)
+  * `has_header`: skip header row if present
+  * `dtype`: read pixels as `uint8` initially (0–255)
+* **Side effects / internal process:**
+
+  * Open file, parse into a NumPy array.
+  * Split first column → internal `self._labels_raw (N,)`, remaining → `self._pixels_raw (N, 784)`.
+  * Assert label range in `{0..9}`; assert pixel range in `[0,255]`.
+* **Returns:** nothing (stores raw arrays internally).
+
+> Later you can add `load_idx(images_path, labels_path)` that populates the same internals. Dense nets need flattened vectors, so CSV with 784 columns is already “flat.” If you ever start from 28×28, you’ll flatten here (28×28 → 784) for FC nets.&#x20;
+
+---
+
+# 2) Parse & shape
+
+### `parse_and_shape(orientation="cols") -> None`
+
+* **Purpose:** Commit to the project-wide shapes/orientation.
+* **Needs to work:** `_pixels_raw (N, 784)`, `_labels_raw (N,)`.
+* **Params:**
+
+  * `orientation`: `"cols"` means **samples-as-columns**
+* **Internal process:**
+
+  * Transpose pixels to `X: (784, N)` if `orientation=="cols"`.
+  * Store `y_raw: (N,)`.
+  * Create `Y: (10, N)` via one-hot (see helper below).
+* **Returns:** nothing (sets `self.X`, `self.y_raw`, `self.Y`).
+
+### Helper: `to_one_hot(y_raw, num_classes=10, orientation="cols") -> Y`
+
+* **Purpose:** One-hot encode once, consistently.
+* **Returns:** `Y (10, N)` for `orientation=="cols"`.
+
+---
+
+# 3) Preprocess
+
+### `preprocess(scale="0to1", *, center=False) -> None`
+
+* **Purpose:** Put pixels in a friendly numeric range for training.
+* **Needs to work:** `self.X` present.
+* **Params:**
+
+  * `scale`: `"0to1"` (divide by 255) or `"-1to1"` (subtract 127.5 then divide 127.5)
+  * `center`: optional mean-centering (off by default)
+* **Internal process:**
+
+  * Cast to `float32`.
+  * Apply chosen scaling; optionally subtract mean (if you enable center).
+  * Record the **exact recipe** in `self.preprocessing_` (for reproducibility/inference).
+* **Returns:** nothing.
+* **Why:** NNs train more stably with small, consistent ranges; many activations behave best in ≈\\[0,1] or \\[−1,1].  &#x20;
+
+---
+
+# 4) Splitting & reproducibility
+
+### `split(train=0.9, val=0.1, test=0.0, *, stratify=True, seed=42) -> None`
+
+* **Purpose:** Create deterministic indices for each split.
+* **Needs to work:** `y_raw (N,)`.
+* **Params:**
+
+  * `train`, `val`, `test`: fractions that sum to ≤ 1.0
+  * `stratify`: keep class proportions similar across splits
+  * `seed`: reproducible permutation
+* **Internal process:**
+
+  * Build a permutation with `seed`.
+  * If `stratify`, permute within each class then interleave.
+  * Slice indices into `self.idxs = {"train":…, "val":…, "test":…}`.
+  * Persist `seed` and the final index arrays.
+* **Returns:** nothing.
+* **Why:** You need held-out data to check generalization (avoid overfitting), and the ability to reproduce a split for debugging.&#x20;
+
+### `get_split(name: Literal["train","val","test"]) -> (X, Y, y_raw)`
+
+* **Purpose:** Provide ready-to-train arrays.
+* **Returns:** views (not copies if possible) with shapes `(784, n)`, `(10, n)`, `(n,)`.
+
+---
+
+# 5) Batching
+
+### `batches(split="train", batch_size=128, *, shuffle=True, drop_last=False) -> Iterator[(Xb, Yb, yb)]`
+
+* **Purpose:** Feed the net mini-batches with consistent shapes.
+* **Needs to work:** `self.idxs[split]` and `self.X/Y/y_raw`.
+* **Params:**
+
+  * `shuffle`: `True` for train (reshuffle **each epoch**), `False` for val/test
+  * `drop_last`: if the last incomplete batch should be dropped
+* **Internal process:**
+
+  * For train: create a new permuted view (deterministic if you pass a step/epoch seed).
+  * Slice contiguous blocks of indices; yield `(784,B)`, `(10,B)`, `(B,)`.
+* **Returns:** generator/iterator.
+
+*(One epoch = you iterate all batches that cover the whole split once.)*
+
+---
+
+# 6) Caching
+
+### `save_cache(path="data/processed/mnist.npz", *, version="v1") -> None`
+
+* **Purpose:** Avoid re-parsing/scaling every run.
+* **Needs to work:** arrays + metadata ready.
+* **Internal process:**
+
+  * Save: `X`, `Y`, `y_raw`, `idxs`, `preprocessing_`, `orientation`, `label_map`, `seed`, `version`.
+  * Optionally store a checksum of the raw CSV and the settings used.
+
+### `load_cache(path="data/processed/mnist.npz", *, require_version=None) -> bool`
+
+* **Purpose:** Load preprocessed arrays if compatible.
+* **Params:**
+
+  * `require_version`: invalidate cache if version mismatches
+* **Returns:** `True` if successfully loaded and validated, else `False`.
+* **Why:** Faster dev loop; fewer accidental diffs in preprocessing between runs.
+
+---
+
+# 7) Sanity checks & diagnostics
+
+### `validate() -> dict`
+
+* **Purpose:** Catch silent data bugs *before* training.
+* **Internal process / checks:**
+
+  * Shapes/orientation: `X (784,N)`, `Y (10,N)`, `y_raw (N,)`.
+  * Ranges after preprocessing: min/max ≈ expected (e.g., 0..1 or −1..1).&#x20;
+  * Class histogram (roughly balanced for MNIST).
+  * No NaNs/Infs.
+  * Optional: spot-check a few `(image,label)` pairs (label alignment after shuffles).
+* **Returns:** summary dict (counts, ranges, dtypes), so `train.py` can print/log it.
+
+### `summary() -> dict`
+
+* **Purpose:** Lightweight snapshot for logs.
+* **Returns:** `{n_total, splits, class_counts, X_dtype, y_dtype, X_range, X_shape, scale_mode, seed, cache_path}`.
+
+---
+
+# 8) Metadata for inference
+
+### `get_metadata() -> dict`
+
+* **Purpose:** Give the FastAPI endpoint everything it needs to preprocess user input identically.
+* **Returns:** e.g.
+
+  ```text
+  {
+    "input_shape": [784],               # expected vector length
+    "orientation": "cols",              # samples-as-columns
+    "num_classes": 10,
+    "label_map": {0:"0",...,9:"9"},     # or names if you had them
+    "preprocessing": {
+       "scale": "0to1",                 # or "-1to1"
+       "center": false
+    },
+    "seed": 42,
+    "version": "v1"
+  }
+  ```
+* **Why:** Inference must mirror training preprocessing exactly, or accuracy will drop.&#x20;
+
+---
+
+## Handy private helpers (optional but useful)
+
+* `_assert_label_range(min_=0, max_=9) -> None`
+* `_compute_class_indices(y_raw) -> dict[int, np.ndarray]` (for stratified split)
+* `_shuffle_in_unison(index_array, rng) -> None`
+* `_check_cache_compat(config) -> bool`
+* `_preview_sample(idx) -> (img_28x28, label)` (used by your visualize script)
+
+---
+
+### Acceptance checklist (what “done” means)
+
+* Loader can **ingest CSV**, produce `X/Y/y_raw` with **correct shapes**.
+* Preprocessing is **documented + reproducible** (metadata stored).
+* Split is **deterministic** with a seed; **stratified** by class.
+* Batching yields **(784,B)** and **(10,B)** consistently.
+* Cache round-trips work and are **validated**.
+* `validate()` returns clean diagnostics; no NaNs, ranges as expected.
+* `get_metadata()` is enough for your FastAPI endpoint to preprocess a canvas image identically to training.
+
+If you want, I can help you convert this into docstrings you can paste on each method while you implement.
+
+
+"""
