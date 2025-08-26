@@ -1,10 +1,11 @@
 import pandas as pd
 import numpy as np
+import datetime
 import random
 import os
 
 class DataLoader:
-    def __init__(self, dataset_path, has_header: bool = True, expect_cols: int = 785, dtype_raw: str = "uint8", scale: str = "0to1", center: bool = False, split: dict = None, stratify: bool = True, seed: int = 42, orientation: str = "cols", cache_path: str | None = "data/processed/mnist.npz", version: str = "v1", num_features: int = 784, num_classes: int = 10, label_map: dict | None = None):
+    def __init__(self, dataset_path, has_header: bool = True, expect_cols: int = 785, dtype_raw: str = "uint8", scale: str = "0to1", center: bool = False, data_split: dict = None, stratify: bool = True, seed: int = 42, orientation: str = "cols", cache_path: str | None = "data/processed/mnist.npz", version: str = "v1", num_features: int = 784, num_classes: int = 10, label_map: dict | None = None):
         self.dataset_path = dataset_path
         self.has_header = has_header
         
@@ -23,28 +24,28 @@ class DataLoader:
         else:
             raise ValueError(f"Scale: {scale} not supported")
             
-        if split is None:
-            self.split = {"train": 0.9, "val": 0.1, "test": 0.0}
+        if data_split is None:
+            self.data_split = {"train": 0.9, "val": 0.1, "test": 0.0}
         else:
-            if not isinstance(split, dict):
+            if not isinstance(data_split, dict):
                 raise ValueError("Split must be a dictionary")
             
-            if not all(isinstance(i, (int, float)) for i in split.values()):
+            if not all(isinstance(i, (int, float)) for i in data_split.values()):
                 raise ValueError("All split values must be numbers")
             
-            if set(split.keys()) != {'train', 'val', 'test'}:
-                raise ValueError(f"Split keys must be exactly {{'train', 'val', 'test'}}, got: {set(split.keys())}")
+            if set(data_split.keys()) != {'train', 'val', 'test'}:
+                raise ValueError(f"Split keys must be exactly {{'train', 'val', 'test'}}, got: {set(data_split.keys())}")
                
-            if not (0 < split["train"] <= 1 and 0 <= split['test'] <= 1 and 0 <= split['val'] <= 1):
-                raise ValueError(f"Split values out of range: train={split['train']}, val={split['val']}, test={split['test']}")
+            if not (0 < data_split["train"] <= 1 and 0 <= data_split['test'] <= 1 and 0 <= data_split['val'] <= 1):
+                raise ValueError(f"Split values out of range: train={data_split['train']}, val={data_split['val']}, test={data_split['test']}")
             
             epsilon = 1e-6
-            sum_splits = sum(split.values())
+            sum_splits = sum(data_split.values())
             
             if not (abs(sum_splits - 1.0) <= epsilon):
                 raise ValueError(f"Split values must sum to exactly 1.0 (±{epsilon}). Got sum: {sum_splits}")
             
-            self.split = split.copy()   
+            self.data_split = data_split.copy()   
             
         self.stratify = stratify
         self.seed = seed
@@ -107,6 +108,7 @@ class DataLoader:
         self.summary_ = None
         self._cache_loaded = False
         self.preprocessing_ = {
+            "applied": False,
             "scale": self.scale, 
             "center": self.center, 
             "dtype_raw": self.dtype_raw, 
@@ -125,7 +127,6 @@ class DataLoader:
                 dtype = self.dtype_raw
             )
         
-        self.df_lenrows = len(df)
     
         if not self.expect_cols == df.shape[1]:
             raise ValueError(f"Expected columns: {self.expect_cols}, got: {df.shape[1]}")
@@ -136,12 +137,10 @@ class DataLoader:
         self._labels_raw = df.iloc[:, 0].to_numpy(copy=False)
         self._pixels_raw = df.iloc[0:, 1:].to_numpy(copy=False) 
         
-        print(self._labels_raw.dtype)
+        self.N = self._labels_raw.shape[0]
         
         labels = self._labels_raw.shape
         pixels = self._pixels_raw.shape
-        
-        
         
         if not np.isfinite(self._labels_raw).all():
             raise ValueError("Labels contain NaN/Inf")
@@ -158,89 +157,197 @@ class DataLoader:
         if not (labels == (len(df), ) and pixels == (len(df), self.num_features)):
             raise ValueError(f"Please check your data shapes: labels shape: {labels} pixels: {pixels}")
     
-    def parse_and_shape(self, orientation='cols'):
-        
+    def parse_and_shape(self): 
+            
         if self._pixels_raw is None or self._labels_raw is None:
-            raise RuntimeError("Function parse_and_shape requieres load_csv() first")
+            raise RuntimeError("parse_and_shape() requires load() to run first - found _pixels_raw or _labels_raw is None. Call .load() before .parse_and_shape()")
         
         if not isinstance(self._pixels_raw, np.ndarray):
-            raise ValueError(f"The pixels_raw array is not a Numpy array, please check it")
-        elif self._pixels_raw.shape != (self.df_lenrows, self.num_features):
-            raise ValueError(f"The pixels_raw array shape has to be: {(self.df_lenrows, self.num_features)}, got: {self._pixels_raw.shape}")
-        elif self._pixels_raw.dtype != np.uint8:
-            raise ValueError(f"The content in pixels_raw array must be uint8, got {self._pixels_raw.dtype}")
+            raise ValueError(f"Expected _pixels_raw to be a NumPy ndarray; got \n{type(self._pixels_raw).__name__}. Verify .load() created NumPy arrays.")
+        
+        N = self.N
+        
+        if self._pixels_raw.shape != (N, self.num_features):
+            raise ValueError(f"Invalid _pixels_raw shape: expected (N={N}, F={self.num_features}), got {self._pixels_raw.shape}")
         
         if not isinstance(self._labels_raw, np.ndarray):
-            raise ValueError(f"The labels_raw array is not a Numpy array, please check it")
-        elif self._labels_raw.shape != (self.num_classes, ):
-            raise ValueError(f"The labels_raw array shape has to be: {(self.num_classes, )}, got: {self._labels_raw.shape}")
-        elif self._labels_raw.dtype != np.uint8:
-            raise ValueError(f"The content in labels_raw array must be uint8, got {self._labels_raw.dtype}")
+            raise ValueError(f"Expected _labels_raw to be a NumPy ndarray; got \n{type(self._labels_raw).__name__}. Verify .load() created NumPy arrays.")
         
-        if not self.num_classes == 10:
-            raise ValueError(f"num_classes for MNIST has to be 0-9, got: {self.num_classes}")
+        if self._labels_raw.shape != (N, ):
+            raise ValueError(f"Invalid _labels_raw shape: expected (N={N}, ), got: {self._labels_raw.shape}")
         
-        if not self.num_features == 784:
-            raise ValueError(f"num_features for MNIST has to be 28x28 = 784, got: {self.num_features}")
+        # Remove if you want a generic loader
+        if self.num_classes != 10:
+            raise ValueError(f"num_classes must be 10 for MNIST (digits 0–9); got {self.num_classes}.")
+        
+        if self.num_features != 784:
+            raise ValueError(f"num_features must be 784 (28×28); got {self.num_features}.")
           
-        if orientation != 'cols' or self.orientation != orientation:
-            raise ValueError(f"The only orientation supported is 'cols', got: {orientation}") 
+        if self.orientation != 'cols':
+            raise ValueError(f"Unsupported orientation '{self.orientation}'. Only 'cols' (samples-as-columns) is supported.") 
         
-        if orientation == 'cols':
-            # me falta probar este codigo y validarlo si esta bien hecho con chatgpt
-            def to_one_hot(y_raw: np.ndarray, num_classes=10, orientation="cols"):
-                if not y_raw.shape == (self.df_lenrows,):
-                    raise ValueError(f"y_raw should be an array of shape (N, ), got: {y_raw.shape}")
+         # me falta probar este codigo y validarlo si esta bien hecho con chatgpt
+        def to_one_hot(y_raw, num_classes):
+            if not y_raw.shape == (N, ):
+                raise ValueError(f"y_raw must be 1D with length N={N}; got shape {y_raw.shape}.")
                 
-                if not y_raw.dtype == np.uint8:
-                    raise ValueError("Error")
+            if not np.issubdtype(y_raw.dtype, np.integer):
+                raise ValueError(f"y_raw must have an integer dtype for indexing; got {y_raw.dtype}.")
                 
-                if not num_classes >= 2:
-                    raise ValueError("error")
+            if num_classes < 2:
+                raise ValueError(f"num_classes must be ≥ 2; got {num_classes}.")
                 
-                if orientation == 'cols':
-                    Y = np.zeros((self.num_classes, self.df_lenrows))
-                    Y[np.arange(y_raw.size), y_raw] = 1.0
-                    # falta el verify
-                    
-                    return Y
+            Y = np.zeros((num_classes, N), dtype=np.float32)
+            Y[y_raw, np.arange(y_raw.size)] = 1.0
+            return Y
             
-            X = self._pixels_raw.T
-            y_raw = self._labels_raw
+        X = self._pixels_raw.T
+        y_raw = self._labels_raw  
+        Y = to_one_hot(y_raw, self.num_classes)
             
-            Y = np.array([[0,0,0,0]])
-            Y = to_one_hot(y_raw, num_classes=self.num_classes, orientation='cols')
-            
-            if Y.shape == (self.num_classes, self.df_lenrows) and Y.dtype == np.float32:
-                self.X = X
-                self.y_raw = y_raw
-                self.Y = Y
-                
-            if self.X.shape == (self.num_classes, self.df_lenrows) and self.y_raw.shape == (self.df_lenrows, ) and self.Y.shape == (self.num_classes, self.df_lenrows) and np.allclose(self.Y.sum(axis=0), 1.0):
-                print('Todo bien, no se que poner aca')
-                
-            
-            
+        self.X = X
+        self.y_raw = y_raw
+        self.Y = Y   
         
-    def get_split(self, type):
-        if type == 'dev':
-            data_dev = self.dataset[0:1000].T
+        # Post conditions para revisar la data generada
+        if self.X.shape != (self.num_features, N):
+            raise RuntimeError(f"Postcondition failed: X must be shaped (F={self.num_features}, N={N}); got {self.X.shape}.")
+    
+        if self.y_raw.shape != (N,):
+            raise RuntimeError(f"Postcondition failed: y_raw must be shaped (N={N},); got {self.y_raw.shape}.")
+    
+        if self.Y.shape != (self.num_classes, N):
+            raise RuntimeError(f"Postcondition failed: Y must be shaped (C={self.num_classes}, N={N}); got {self.Y.shape}.")
+    
+        # Check one-hot properties
+        if not np.allclose(self.Y.sum(axis=0), 1.0):
+            raise RuntimeError("Postcondition failed: each column of Y must sum to 1 (one-hot). Found non-one-hot column(s).")
+        
+        if not (self.Y.argmax(axis=0) == self.y_raw).all():
+            raise RuntimeError("Postcondition failed: Y.argmax(axis=0) must match y_raw exactly.")    
+    
+    def preprocess(self):
+        
+        if not isinstance(self.X, np.ndarray):
+            raise ValueError(f'preprocess() requires self.X as a NumPy array; got {type(self.X).__name__}.')
+        
+        N = self.X.shape[1]
+        
+        if not (self.X.shape == (self.num_features, N) and N > 0):
+            raise ValueError(f'X must be shaped (F={self.num_features}, N) with N>0; got {self.X.shape}.')
+        
+        if not ((self.X >= 0) & (self.X <= 255)).all():
+            raise ValueError(f'Raw pixels must be integers in [0,255] before scaling.')
+        
+        if self.preprocessing_['applied']:
+            raise ValueError('Data already appears preprocessed; refusing to run twice.')
             
-            X_dev = data_dev[0]
-            Y_dev = data_dev[1:self.columns]
+        if self.scale == "0to1":
+            self.X = self.X / 255
+        elif self.scale == "-1to1":
+            self.X = (self.X - 127.5) / 127.5
+        else:
+            raise ValueError(f"Unsupported scale '{self.scale}'; expected '0to1' or '-1to1'.")
+        
+        # I don't know what its supposed to go here
+        if self.center:
+            pass
+        
+        self.preprocessing_ = {
+            "applied": False,
+            "scale": self.scale, 
+            "center": self.center, 
+            "dtype_raw": self.dtype_raw, 
+            "orientation": self.orientation, 
+            "num_features": self.num_features, 
+            "num_classes": self.num_classes,
+            "idempotent_guard": datetime.datetime.now()
+        }
+       
+    def split(self):
+        N = self.N
+        train = self.data_split['train']
+        val = self.data_split['val']
+        
+        if self.stratify:
+            rng = random.Random(self.seed)
             
-            X_dev = X_dev / 255
+            # Build class-to-indices mapping and shuffle within each class
+            Ic = {c: [idx for idx, label in enumerate(self.y_raw) if label == c] for c in range(self.num_classes)}
+            for class_indices in Ic.values():
+                rng.shuffle(class_indices)
             
-            return X_dev, Y_dev
-        elif type == "train":
-            data_train = self.dataset[1000:self.rows].T
+            # Split each class and collect indices
+            train_ids, val_ids, test_ids = [], [], []
             
-            X_train = data_train[0]
-            Y_train = data_train[1:self.columns]
+            for c in range(self.num_classes):
+                n_c = len(Ic[c])
+                t_c = round(train * n_c)
+                v_c = round(val * n_c)
+                
+                train_ids.extend(Ic[c][:t_c])
+                val_ids.extend(Ic[c][t_c:t_c + v_c])
+                test_ids.extend(Ic[c][t_c + v_c:])
             
-            X_train = X_train / 255
+            # Shuffle each split to avoid class blocks
+            rng.shuffle(train_ids)
+            rng.shuffle(val_ids)
+            rng.shuffle(test_ids)
             
-            return X_train, Y_train      
+            self.idxs["train"] = np.array(train_ids, dtype=int)
+            self.idxs["val"] = np.array(val_ids, dtype=int) 
+            self.idxs["test"] = np.array(test_ids, dtype=int)
+            
+        else:
+            # Simple random split
+            rng = random.Random(self.seed)
+            indices = list(range(N))
+            rng.shuffle(indices)
+            
+            n_train = round(train * N)
+            n_val = round(val * N)
+            
+            self.idxs["train"] = np.array(indices[:n_train], dtype=int)
+            self.idxs["val"] = np.array(indices[n_train:n_train + n_val], dtype=int)
+            self.idxs["test"] = np.array(indices[n_train + n_val:], dtype=int)
+        
+        # Simple post-check
+        total = len(self.idxs["train"]) + len(self.idxs["val"]) + len(self.idxs["test"])
+        assert total == N, f"Split doesn't sum to N: {total} != {N}"          
+            
+            
+    def get_split(self, name):
+        if name not in {"train", "val", "test"}:
+            raise ValueError(f"Invalid split name '{name}'. Must be one of: 'train', 'val', 'test'")
+        
+        if self.idxs[name] is None:
+            raise RuntimeError(f"Split '{name}' not available. Call .split() first to create data splits.")
+        
+        if self.X is None or self.Y is None or self.y_raw is None:
+            raise RuntimeError("Data not loaded. Call .load() and .parse_and_shape() first.")
+        
+        indices = self.idxs[name]
+        
+        X_subset = self.X[:, indices]
+        Y_subset = self.Y[:, indices] 
+        y_raw_subset = self.y_raw[indices]
+        
+        return X_subset, Y_subset, y_raw_subset 
+    
+# DataLoader Pipeline
+data = DataLoader('./data/digit-recognizer/train.csv')
+data.load()
+data.parse_and_shape()
+data.preprocess()
+data.split()
+
+X_train, Y_train, y_train = data.get_split("train")
+X_val, Y_val, y_val = data.get_split("val")
+X_test, Y_test, y_test = data.get_split("test")
+
+print(X_train.shape, Y_train.shape, y_train.shape)
+print(X_val.shape, Y_val.shape, y_val.shape)
+print(X_test.shape, Y_test.shape, y_test.shape)
        
 """
 Split policy
@@ -255,22 +362,7 @@ If `split` is None, the default is {'train': 0.9, 'val': 0.1, 'test': 0.0}.
 If `stratify` is True, class proportions are preserved per split. The splitting
 (and later batch shuffles) are deterministic given `seed`.
 
-"""
-       
-data = DataLoader('./data/digit-recognizer/train.csv')
-data.load()
-# X_train, Y_train = data.get_split('train')
-
-# print(data.split)
-# print(X_train.shape, Y_train.shape)
-
-# Tengo que conocer como se mira el X/Y_train y X/Y_dev 
-# Cuales son las funciones minimas para el data loader?
-    # Maneja el load dataset
-    # Maneja el split de la data en X/Y_train y X/Y_dev 
-    # y manejalos batches
-    # Eso seria lo minimo no?
-    
+"""      
     
 
 """
@@ -280,13 +372,13 @@ Lo que tengo que hacer para esta clase es:
 
 1. load_csv LISTO
 
-2. parse_and_shape
-    2.1 to_one_hot
+2. parse_and_shape LISTO
+    2.1 to_one_hot LISTO
     
-3. preprocess
+3. preprocess LISTO
 
-4. split
-5. get_split
+4. split LISTO
+5. get_split LISTO
 
 6. batches
 
