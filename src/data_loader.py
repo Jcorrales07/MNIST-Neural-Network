@@ -332,7 +332,70 @@ class DataLoader:
         Y_subset = self.Y[:, indices] 
         y_raw_subset = self.y_raw[indices]
         
-        return X_subset, Y_subset, y_raw_subset 
+        return X_subset, Y_subset, y_raw_subset
+    
+    def batches(self, split="train", batch_size=128, *, shuffle=True, drop_last=False):
+        """
+        Generate mini-batches for the specified data split.
+        
+        Args:
+            split (str): Which split to use ("train", "val", "test")
+            batch_size (int): Size of each batch
+            shuffle (bool): Whether to shuffle indices before batching
+            drop_last (bool): Whether to drop the last incomplete batch
+            
+        Yields:
+            tuple: (X_batch, Y_batch, y_raw_batch) where:
+                - X_batch: (num_features, batch_size) pixel data
+                - Y_batch: (num_classes, batch_size) one-hot labels  
+                - y_raw_batch: (batch_size,) raw integer labels
+        """
+        if split not in {"train", "val", "test"}:
+            raise ValueError(f"Invalid split name '{split}'. Must be one of: 'train', 'val', 'test'")
+        
+        if self.idxs[split] is None:
+            raise RuntimeError(f"Split '{split}' not available. Call .split() first to create data splits.")
+        
+        if self.X is None or self.Y is None or self.y_raw is None:
+            raise RuntimeError("Data not loaded. Call .load() and .parse_and_shape() first.")
+        
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        
+        # Get indices for this split
+        indices = self.idxs[split].copy()  # Copy to avoid modifying original
+        
+        # Shuffle if requested (typically True for training)
+        if shuffle:
+            rng = np.random.RandomState(self.seed)
+            rng.shuffle(indices)
+        
+        n_samples = len(indices)
+        
+        # Calculate number of complete batches
+        n_batches = n_samples // batch_size
+        
+        # Handle last incomplete batch
+        if not drop_last and (n_samples % batch_size) > 0:
+            n_batches += 1
+        
+        # Generate batches
+        for i in range(n_batches):
+            start_idx = i * batch_size
+            end_idx = min(start_idx + batch_size, n_samples)
+            
+            # Skip incomplete batch if drop_last=True
+            if drop_last and (end_idx - start_idx) < batch_size:
+                break
+                
+            batch_indices = indices[start_idx:end_idx]
+            
+            # Extract batch data
+            X_batch = self.X[:, batch_indices]  # (num_features, batch_size)
+            Y_batch = self.Y[:, batch_indices]  # (num_classes, batch_size)
+            y_raw_batch = self.y_raw[batch_indices]  # (batch_size,)
+            
+            yield X_batch, Y_batch, y_raw_batch 
     
 # DataLoader Pipeline
 data = DataLoader('./data/digit-recognizer/train.csv')
@@ -340,6 +403,10 @@ data.load()
 data.parse_and_shape()
 data.preprocess()
 data.split()
+
+for X_batch, Y_batch, y_batch in data.batches("train", batch_size=64, shuffle=True):
+    print(X_batch, Y_batch, y_batch)
+    break
 
 X_train, Y_train, y_train = data.get_split("train")
 X_val, Y_val, y_val = data.get_split("val")
@@ -391,127 +458,6 @@ Lo que tengo que hacer para esta clase es:
 11. get_metadata
 
 Basicamente lo que estuve hablando con el chat: https://chatgpt.com/g/g-p-68a624f6af808191b42299d9be37a81f-mnist-nn/c/68a62778-122c-8328-8db0-18f3e49ea414
-
-
-Love this mindset—if you understand the “why,” the “how” becomes obvious. Here’s what each piece of a solid `DataLoader` is doing, why it matters for your MNIST project, and what “done” looks like.
-
----
-
-## 1) Load the data
-
-**What:** Read the MNIST CSV into memory. In most CSV versions, each row is one image; the first column is the label (0–9) and the remaining 784 columns are pixel values.
-
-**Why:** Everything else builds on this—no clean load, no clean training.
-
-**Done looks like:** you can access:
-
-* `pixels_raw` with shape `(N, 784)` (or transposed if you choose the “samples as columns” convention).
-* `labels_raw` with shape `(N,)` and integer classes `0..9`.
-
----
-
-## 2) Parse & shape
-
-**What:** Decide and enforce array shapes and orientation throughout the project.
-
-* You already chose **“samples as columns.”** That means use:
-
-  * `X`: `(features, N)` → `(784, N)`
-  * `y_raw`: `(N,)`
-  * `Y` (one-hot): `(classes, N)` → `(10, N)`
-
-**Why:** Consistency keeps your math and backprop simple. Dense layers expect vectors; MNIST images must be **flattened** (28×28 → 784) for a fully connected net. (Conv nets can keep H×W, but you’re doing FC now.)&#x20;
-
-**Done looks like:** one place (your loader) guarantees these shapes; the rest of the code can assume them.
-
----
-
-## 3) Preprocess
-
-**What:** Scale pixel values to a small, consistent range (e.g., 0–1 or −1–1); optionally center around 0.
-
-**Why:** Neural nets train better when inputs are in similar, modest ranges. Scaling avoids instabilities and works harmoniously with common activations (ReLU, sigmoid, softmax). For images, dividing by 255 (0–1) or shifting to −1–1 are both common.  &#x20;
-
-**Important rule:** Fit your scaling **using training data** and apply the *same* scaler to validation/test and to future inference inputs. Don’t let test data influence preprocessing choices (no leakage). &#x20;
-
-**Done looks like:** you store the scaling recipe (e.g., “divide by 255” or min/max/mean), and `X` is scaled accordingly.
-
----
-
-## 4) Splitting & reproducibility
-
-**What:** Split into train/validation(/test) and make the split repeatable (set a random seed).
-
-**Why:** You need **out-of-sample** data to detect overfitting and measure generalization. A repeatable split helps debugging and comparisons.&#x20;
-
-**Done looks like:** deterministic masks/indices for `train`, `val`, (`test`), with a saved `random_state` so you can recreate the split later.
-
----
-
-## 5) Batching
-
-**What:** Serve data in mini-batches (e.g., 64 or 128 samples at a time) and shuffle the order each **epoch**.
-
-**Why:** Batches make training efficient and stable; shuffling prevents the model from seeing long runs of a single class and becoming biased. When shuffling, keep samples and labels aligned. &#x20;
-
-**Epochs?** One **epoch** = the model has seen every training sample once (usually via many batches). You’ll see loss/accuracy reported per step and per epoch.&#x20;
-
-**Done looks like:** an iterator that, per epoch, shuffles consistently, yields `(X_batch, Y_batch)` (and `y_raw_batch` if you want), and handles the final “short” batch gracefully.
-
----
-
-## 6) Caching
-
-**What:** Save expensive-to-recompute artifacts (e.g., scaled `X`, one-hot `Y`, split indices) to disk, typically in a fast NumPy format.
-
-**Why:** Faster dev loop. You avoid re-parsing CSV and re-doing preprocessing every run. It also reduces the chance of accidental drift in preprocessing across runs.
-
-**Done looks like:** a small `.npz` that stores `{X, y_raw, Y, split_indices, scaler_metadata, version/tag}` and a simple “is cache valid?” check (same CSV file, same preprocessing settings).
-
----
-
-## 7) Sanity checks & diagnostics
-
-**What:** Quick validations that catch subtle data bugs *before* training:
-
-* **Shapes/orientation:** `X.shape == (784, N)`, `Y.shape == (10, N)`, `y_raw.shape == (N,)`.
-* **Ranges:** min/max of `X` match your scaling (e.g., 0–1 or −1–1).&#x20;
-* **Label alignment after shuffle:** randomly inspect a few images and confirm the label matches. (Shuffling samples and labels independently is a classic pitfall.) &#x20;
-* **Class balance:** histogram of labels—MNIST is roughly balanced; if yours isn’t, you’ll want to know.
-* **No NaNs/Infs:** check for invalid numbers.
-* **Tiny overfit test:** train on a very small subset and confirm the model can drive loss near zero—if it can’t, your pipeline might be broken.
-
-**Why:** These catch the mistakes that silently ruin training.
-
-**Done looks like:** a `DataLoader.validate()` step that prints a short report (shapes, ranges, class counts) and maybe shows a few sample images/labels.
-
----
-
-## 8) Metadata for inference
-
-**What:** Save everything you’ll need to reproduce preprocessing and interpret predictions later:
-
-* Input spec: “expects `(784,)` vector scaled by **\\[your rule]**; orientation = samples-as-columns.”
-* Label mapping `0..9` → class names (if you’re using names).
-* One-hot vs sparse choice (your training used one-hot targets—store that).
-* The scaler parameters or the exact rule (e.g., “divide by 255” or “subtract 127.5 then divide 127.5”). You *must* apply the same to user-drawn digits in your React app.&#x20;
-
-**Why:** The model is only as good as the data you feed it—at inference time you must **mirror** training-time preprocessing or predictions will degrade.&#x20;
-
-**Done looks like:** alongside saved weights, you persist a small JSON (or similar) with the above fields and the random seed used for splits/shuffles.
-
----
-
-### TL;DR — what your `DataLoader` should *return/expose*
-
-* **Tensors/arrays:** `X_train, Y_train, y_train_raw`, `X_val, Y_val, y_val_raw`, (`X_test, ...`).
-* **Iterators:** a batched, shuffling iterator over the train split (and non-shuffling for val/test).
-* **Metadata:** scaler rule/params, label mapping, input shape/orientation, random seed, and any cache/version info.
-* **Diagnostics:** quick stats (shapes, ranges, class counts) and a simple `validate()` method.
-
-If you’d like, we can turn this into a short acceptance checklist you can keep next to `data_loader.py` so you can tick each item off as you implement it.
-
-
 
 """    
    
